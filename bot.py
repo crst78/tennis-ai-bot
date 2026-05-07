@@ -1,6 +1,6 @@
 from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     ContextTypes
 )
@@ -8,27 +8,28 @@ from telegram.ext import (
 from flask import Flask
 from threading import Thread
 import os
+import asyncio
 
 TOKEN = "8519906766:AAEPthY8VimdwLrQTVfGYi7pUhbKTRyqiss"
 
-# -------- FLASK SERVER --------
+# ---------- FLASK ----------
 
-app_flask = Flask(__name__)
+app = Flask(__name__)
 
-@app_flask.route("/")
+@app.route("/")
 def home():
-    return "Tennis AI Bot is running!"
+    return "Bot online!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    app_flask.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port)
 
-# -------- TELEGRAM COMMANDS --------
+# ---------- TELEGRAM ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎾 Tennis AI Bot attivo!\n\n"
-        "Comando disponibile:\n"
+        "Comandi:\n"
         "/match Djokovic Alcaraz"
     )
 
@@ -41,41 +42,45 @@ async def match(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    player1 = context.args[0]
-    player2 = context.args[1]
+    p1 = context.args[0]
+    p2 = context.args[1]
 
-    risposta = f"""
+    text = f"""
 🎾 Match Analysis
 
-{player1} vs {player2}
+{p1} vs {p2}
 
 Probabilità vittoria:
-• {player1}: 52%
-• {player2}: 48%
+• {p1}: 52%
+• {p2}: 48%
 
 Analisi:
-Match molto equilibrato.
+Match equilibrato.
 Possibile over games.
 """
 
-    await update.message.reply_text(risposta)
+    await update.message.reply_text(text)
 
-# -------- MAIN --------
+# ---------- MAIN ----------
 
-def main():
+async def main():
 
-    # Avvia Flask
-    Thread(target=run_web).start()
-
-    # Avvia Telegram Bot
-    application = ApplicationBuilder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("match", match))
 
     print("Bot avviato!")
 
-    application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    main()
+
+    Thread(target=run_web).start()
+
+    asyncio.run(main())
