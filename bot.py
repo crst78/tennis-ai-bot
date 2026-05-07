@@ -5,7 +5,7 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-TOKEN = "8519906766:AAHpXAp6Sm0xLXbWhAmc_by6ION4fjub9s"
+TOKEN = "8519906766:AAHpXAp6SXm0xLXbWhAmc_by6ION4fjub9s"
 
 web = Flask(__name__)
 
