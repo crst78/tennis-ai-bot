@@ -1,21 +1,29 @@
-import os
-import threading
-from flask import Flask
-
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes
+)
 
-TOKEN = "8519906766:AAHpXAp6SXm0xLXbWhAmc_by6ION4fjub9s"
+from flask import Flask
+from threading import Thread
+import os
 
-web = Flask(__name__)
+TOKEN = "8519906766:AAEPthY8VimdwLrQTVfGYi7pUhbKTRyqiss"
 
-@web.route("/")
+# -------- FLASK SERVER --------
+
+app_flask = Flask(__name__)
+
+@app_flask.route("/")
 def home():
-    return "Bot attivo!"
+    return "Tennis AI Bot is running!"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
-    web.run(host="0.0.0.0", port=port)
+    app_flask.run(host="0.0.0.0", port=port)
+
+# -------- TELEGRAM COMMANDS --------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -25,9 +33,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if len(context.args) < 2:
         await update.message.reply_text(
-            "Uso corretto:\n/match Djokovic Alcaraz"
+            "Uso corretto:\n"
+            "/match Djokovic Alcaraz"
         )
         return
 
@@ -35,35 +45,37 @@ async def match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player2 = context.args[1]
 
     risposta = f"""
-🎾 MATCH ANALYSIS
+🎾 Match Analysis
 
-👤 {player1} vs {player2}
+{player1} vs {player2}
 
-✅ Miglior giocata tecnica:
-Over 22.5 Games
+Probabilità vittoria:
+• {player1}: 52%
+• {player2}: 48%
 
-📊 Possibili mercati da valutare:
-• Vincente match
-• Handicap games
-• Over/Under games
-• Ace
-• Doppi falli
-
-🔥 Match tecnicamente equilibrato.
+Analisi:
+Match molto equilibrato.
+Possibile over games.
 """
 
     await update.message.reply_text(risposta)
 
+# -------- MAIN --------
+
 def main():
-    threading.Thread(target=run_web, daemon=True).start()
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Avvia Flask
+    Thread(target=run_web).start()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("match", match))
+    # Avvia Telegram Bot
+    application = ApplicationBuilder().token(TOKEN).build()
 
-    print("BOT AVVIATO")
-    app.run_polling(close_loop=False)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("match", match))
+
+    print("Bot avviato!")
+
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
