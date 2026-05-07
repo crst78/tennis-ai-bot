@@ -1,4 +1,3 @@
-python-telegram-bot==20.7
+pyTelegramBotAPI
 flask
-requests
 gunicorn
