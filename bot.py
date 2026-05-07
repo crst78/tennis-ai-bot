@@ -5,8 +5,8 @@ import os
 import re
 from difflib import SequenceMatcher
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "INSERISCI_TOKEN_TELEGRAM")
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "INSERISCI_RAPIDAPI_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
 
 RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 BASE_URL = f"https://{RAPIDAPI_HOST}"
@@ -16,7 +16,19 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 CIRCUITS = ["atp", "wta", "itf"]
-PLAYERS_CACHE = {}
+
+KNOWN_PLAYERS = {
+    "djokovic": {"id": 5992, "name": "Novak Djokovic", "country": "SRB", "circuit": "atp"},
+    "sinner": {"id": 47275, "name": "Jannik Sinner", "country": "ITA", "circuit": "atp"},
+    "alcaraz": {"id": 68074, "name": "Carlos Alcaraz", "country": "ESP", "circuit": "atp"},
+    "zverev": {"id": 41830, "name": "Alexander Zverev", "country": "GER", "circuit": "atp"},
+    "medvedev": {"id": 10633, "name": "Daniil Medvedev", "country": "RUS", "circuit": "atp"},
+    "rublev": {"id": 25332, "name": "Andrey Rublev", "country": "RUS", "circuit": "atp"},
+    "musetti": {"id": 63572, "name": "Lorenzo Musetti", "country": "ITA", "circuit": "atp"},
+    "draper": {"id": 63017, "name": "Jack Draper", "country": "GBR", "circuit": "atp"},
+    "medjedovic": {"id": 63770, "name": "Hamad Medjedovic", "country": "", "circuit": "atp"},
+    "royer": {"id": 61604, "name": "Valentin Royer", "country": "", "circuit": "atp"},
+}
 
 
 def api_get(path):
@@ -37,20 +49,20 @@ def similarity(a, b):
 
 
 def get_players(circuit):
-    if circuit in PLAYERS_CACHE:
-        return PLAYERS_CACHE[circuit]
-
     status, data = api_get(f"/tennis/v2/{circuit}/player/")
 
-    if status == 200 and "data" in data:
-        PLAYERS_CACHE[circuit] = data["data"]
-        return data["data"]
+    if status == 200 and isinstance(data, dict):
+        return data.get("data", [])
 
     return []
 
 
-def find_player(player_name):
-    query = player_name.lower().strip()
+def find_player(name):
+    query = name.lower().strip()
+
+    if query in KNOWN_PLAYERS:
+        return KNOWN_PLAYERS[query]
+
     best_player = None
     best_score = 0
 
@@ -58,44 +70,43 @@ def find_player(player_name):
         players = get_players(circuit)
 
         for p in players:
-            name = p.get("name", "")
-            if not name:
+            player_name = p.get("name", "")
+            if not player_name:
                 continue
 
-            name_low = name.lower()
+            player_name_low = player_name.lower()
 
-            if query == name_low or query in name_low:
+            if query == player_name_low or query in player_name_low:
                 return {
                     "id": p.get("id"),
-                    "name": name,
+                    "name": player_name,
                     "country": p.get("countryAcr", ""),
                     "circuit": circuit
                 }
 
-            score = similarity(query, name_low)
+            score = similarity(query, player_name_low)
 
             if score > best_score:
                 best_score = score
                 best_player = {
                     "id": p.get("id"),
-                    "name": name,
+                    "name": player_name,
                     "country": p.get("countryAcr", ""),
                     "circuit": circuit
                 }
 
-    if best_score >= 0.55:
+    if best_score >= 0.60:
         return best_player
 
     return None
 
 
 def get_past_matches(player):
-    status, data = api_get(
-        f"/tennis/v2/{player['circuit']}/player/past-matches/{player['id']}"
-    )
+    path = f"/tennis/v2/{player['circuit']}/player/past-matches/{player['id']}"
+    status, data = api_get(path)
 
-    if status == 200 and "data" in data:
-        return data["data"]
+    if status == 200 and isinstance(data, dict):
+        return data.get("data", [])
 
     return []
 
@@ -198,7 +209,7 @@ def build_analysis(name1, name2):
             "⚠️ Non riesco a trovare uno dei due giocatori.\n\n"
             "Scrivi così:\n"
             "/match Djokovic vs Sinner\n\n"
-            "Oppure usa cognomi più precisi."
+            "Oppure prova solo con i cognomi."
         )
 
     m1 = get_past_matches(p1)
@@ -208,6 +219,7 @@ def build_analysis(name1, name2):
     a2 = analyze_player(p2, m2)
 
     combined_avg = round((a1["avg_games"] + a2["avg_games"]) / 2, 1)
+
     over_score = a1["over_22"] + a2["over_22"]
     long_score = a1["long_matches"] + a2["long_matches"]
     tie_score = a1["tiebreaks"] + a2["tiebreaks"]
@@ -217,7 +229,7 @@ def build_analysis(name1, name2):
     elif combined_avg >= 21 or over_score >= 6:
         over_pick = "Over games interessante ma non fortissimo"
     else:
-        over_pick = "Under/No Over prioritario"
+        over_pick = "Under / No Over prioritario"
 
     if long_score >= 7:
         handicap_pick = "Handicap positivo sullo sfavorito interessante"
@@ -243,7 +255,7 @@ def build_analysis(name1, name2):
 {p1['name']} ({p1['circuit'].upper()}) vs {p2['name']} ({p2['circuit'].upper()})
 
 🌍 Paesi:
-{p1['country']} vs {p2['country']}
+{p1.get('country', '')} vs {p2.get('country', '')}
 
 📊 Ultime 10 partite:
 
