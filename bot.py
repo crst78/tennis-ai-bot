@@ -1,52 +1,46 @@
-from telegram.ext import Updater, CommandHandler
 from telegram import Update
-from telegram.ext.callbackcontext import CallbackContext
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 TOKEN = "8519906766:AAHpXAp6Sm0xLXbWhAmc_by6ION4fjub9s"
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
-        "🎾 Tennis AI Bot Attivo!\n\n"
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎾 Tennis AI Bot attivo!\n\n"
         "Comando disponibile:\n"
         "/match Djokovic Alcaraz"
     )
 
-def match(update: Update, context: CallbackContext):
-
-    try:
-        player1 = context.args[0]
-        player2 = context.args[1]
-    except:
-        update.message.reply_text(
+async def match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
             "Uso corretto:\n/match Djokovic Alcaraz"
         )
         return
 
+    player1 = context.args[0]
+    player2 = context.args[1]
+
     risposta = f"""
-🎾 ANALISI TECNICA
+🎾 Match Analysis
 
-👤 {player1}
-vs
-👤 {player2}
+{player1} vs {player2}
 
-✅ Migliori mercati:
-• Vincente Match
-• Handicap Games
-• Over/Under Games
-• Ace
-• Doppi Falli
+✅ Miglior giocata tecnica:
+Over 22.5 Games
 
-📊 Analisi tecnica in corso...
+📊 Possibile valore:
+Tie-break nel match
+
+🔥 Match equilibrato tecnicamente.
 """
 
-    update.message.reply_text(risposta)
+    await update.message.reply_text(risposta)
 
-updater = Updater(TOKEN, use_context=True)
+app = ApplicationBuilder().token(TOKEN).build()
 
-dispatcher = updater.dispatcher
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("match", match))
 
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(CommandHandler("match", match))
+print("BOT AVVIATO")
 
-updater.start_polling()
-updater.idle()
+app.run_polling()
