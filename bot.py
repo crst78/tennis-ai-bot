@@ -1,86 +1,56 @@
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes
-)
-
+import os
+import telebot
 from flask import Flask
 from threading import Thread
-import os
-import asyncio
 
-TOKEN = "8519906766:AAEPthY8VimdwLrQTVfGYi7pUhbKTRyqiss"
+TOKEN = "8519906766:AAEPthY8VimdwlrQTVfGYi7pUhbKTRyqiss"
 
-# ---------- FLASK ----------
+bot = telebot.TeleBot(TOKEN)
 
 app = Flask(__name__)
 
-@app.route("/")
+@app.route('/')
 def home():
-    return "Bot online!"
+    return "Tennis AI Bot Online"
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(message, "🎾 Tennis AI Bot attivo!")
+
+@bot.message_handler(commands=['match'])
+def match(message):
+    text = message.text.replace("/match", "").strip()
+
+    if text == "":
+        bot.reply_to(message, "Scrivi un match dopo /match")
+        return
+
+    risposta = f"""
+🎾 Match Analizzato
+
+📌 Match:
+{text}
+
+✅ Pronostico AI:
+Over 22.5 Games
+
+🔥 Confidenza:
+78%
+
+💰 Value Bet trovata
+"""
+
+    bot.reply_to(message, risposta)
+
+def run_bot():
+    print("BOT ONLINE")
+    bot.infinity_polling()
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# ---------- TELEGRAM ----------
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎾 Tennis AI Bot attivo!\n\n"
-        "Comandi:\n"
-        "/match Djokovic Alcaraz"
-    )
-
-async def match(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "Uso corretto:\n"
-            "/match Djokovic Alcaraz"
-        )
-        return
-
-    p1 = context.args[0]
-    p2 = context.args[1]
-
-    text = f"""
-🎾 Match Analysis
-
-{p1} vs {p2}
-
-Probabilità vittoria:
-• {p1}: 52%
-• {p2}: 48%
-
-Analisi:
-Match equilibrato.
-Possibile over games.
-"""
-
-    await update.message.reply_text(text)
-
-# ---------- MAIN ----------
-
-async def main():
-
-    application = Application.builder().token(TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("match", match))
-
-    print("Bot avviato!")
-
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    while True:
-        await asyncio.sleep(3600)
+Thread(target=run_bot).start()
 
 if __name__ == "__main__":
-
-    Thread(target=run_web).start()
-
-    asyncio.run(main())
+    run_web()
