@@ -5,8 +5,8 @@ import os
 import re
 from difflib import SequenceMatcher
 
-TELEGRAM_TOKEN = "8519906766:AAEPthY8VimdwLrQTVfGYi7pUhbKTRyqiss"
-RAPIDAPI_KEY = "f83bb28b29mshe277024278f5591p108cabjsn16d1261fcb66"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "INSERISCI_TOKEN_TELEGRAM")
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "INSERISCI_RAPIDAPI_KEY")
 
 RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 BASE_URL = f"https://{RAPIDAPI_HOST}"
@@ -20,14 +20,13 @@ PLAYERS_CACHE = {}
 
 
 def api_get(path):
-    url = BASE_URL + path
     headers = {
         "X-RapidAPI-Key": RAPIDAPI_KEY,
         "X-RapidAPI-Host": RAPIDAPI_HOST
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=25)
+        r = requests.get(BASE_URL + path, headers=headers, timeout=30)
         return r.status_code, r.json()
     except Exception as e:
         return 500, {"error": str(e)}
@@ -50,49 +49,50 @@ def get_players(circuit):
     return []
 
 
-def find_player(name):
-    name = name.lower().strip()
-    best_match = None
+def find_player(player_name):
+    query = player_name.lower().strip()
+    best_player = None
     best_score = 0
 
     for circuit in CIRCUITS:
         players = get_players(circuit)
 
         for p in players:
-            api_name = p.get("name", "")
-            if not api_name:
+            name = p.get("name", "")
+            if not name:
                 continue
 
-            api_name_low = api_name.lower()
+            name_low = name.lower()
 
-            if name == api_name_low or name in api_name_low:
+            if query == name_low or query in name_low:
                 return {
                     "id": p.get("id"),
-                    "name": p.get("name"),
+                    "name": name,
                     "country": p.get("countryAcr", ""),
                     "circuit": circuit
                 }
 
-            score = similarity(name, api_name_low)
+            score = similarity(query, name_low)
 
             if score > best_score:
                 best_score = score
-                best_match = {
+                best_player = {
                     "id": p.get("id"),
-                    "name": p.get("name"),
+                    "name": name,
                     "country": p.get("countryAcr", ""),
                     "circuit": circuit
                 }
 
     if best_score >= 0.55:
-        return best_match
+        return best_player
 
     return None
 
 
 def get_past_matches(player):
-    path = f"/tennis/v2/{player['circuit']}/player/past-matches/{player['id']}"
-    status, data = api_get(path)
+    status, data = api_get(
+        f"/tennis/v2/{player['circuit']}/player/past-matches/{player['id']}"
+    )
 
     if status == 200 and "data" in data:
         return data["data"]
@@ -114,32 +114,32 @@ def parse_games(result):
     if not sets:
         return None
 
-    total_games = 0
-    tie_breaks = 0
+    games = 0
+    tiebreaks = 0
 
     for a, b in sets:
         a = int(a)
         b = int(b)
-        total_games += a + b
+        games += a + b
 
         if a == 7 or b == 7:
-            tie_breaks += 1
+            tiebreaks += 1
 
     return {
         "sets": len(sets),
-        "games": total_games,
-        "tie_breaks": tie_breaks
+        "games": games,
+        "tiebreaks": tiebreaks
     }
 
 
 def analyze_player(player, matches):
     wins = 0
     losses = 0
+    valid_matches = 0
     total_games = 0
-    valid = 0
     over_22 = 0
     long_matches = 0
-    tie_breaks = 0
+    tiebreaks = 0
 
     for m in matches[:10]:
         if m.get("match_winner") == player["id"]:
@@ -150,7 +150,7 @@ def analyze_player(player, matches):
         parsed = parse_games(m.get("result"))
 
         if parsed:
-            valid += 1
+            valid_matches += 1
             total_games += parsed["games"]
 
             if parsed["games"] >= 23:
@@ -159,9 +159,9 @@ def analyze_player(player, matches):
             if parsed["sets"] >= 3:
                 long_matches += 1
 
-            tie_breaks += parsed["tie_breaks"]
+            tiebreaks += parsed["tiebreaks"]
 
-    avg_games = round(total_games / valid, 1) if valid else 0
+    avg_games = round(total_games / valid_matches, 1) if valid_matches else 0
 
     return {
         "wins": wins,
@@ -169,52 +169,36 @@ def analyze_player(player, matches):
         "avg_games": avg_games,
         "over_22": over_22,
         "long_matches": long_matches,
-        "tie_breaks": tie_breaks
+        "tiebreaks": tiebreaks
     }
 
 
-def build_prediction(a1, a2):
-    combined_avg = round((a1["avg_games"] + a2["avg_games"]) / 2, 1)
-    over_score = a1["over_22"] + a2["over_22"]
-    long_score = a1["long_matches"] + a2["long_matches"]
-    tie_score = a1["tie_breaks"] + a2["tie_breaks"]
+def split_players(text):
+    text = text.strip()
 
-    if combined_avg >= 24 or over_score >= 10:
-        over = "Over 22.5 games molto interessante"
-    elif combined_avg >= 21 or over_score >= 6:
-        over = "Over games interessante ma non fortissimo"
-    else:
-        over = "Under/No Over prioritario"
+    if " vs " in text.lower():
+        parts = re.split(r"\s+vs\s+", text, flags=re.IGNORECASE)
+        return parts[0].strip(), parts[1].strip()
 
-    if long_score >= 7:
-        handicap = "Handicap positivo sullo sfavorito interessante"
-    else:
-        handicap = "Handicap da valutare con prudenza"
+    words = text.split()
 
-    if tie_score >= 4:
-        ace = "Possibile match con molti turni di servizio e ace"
-    else:
-        ace = "Ace non prioritario dai dati recenti"
+    if len(words) == 2:
+        return words[0], words[1]
 
-    if a1["wins"] > a2["wins"]:
-        favorito = "leggero vantaggio tecnico primo giocatore"
-    elif a2["wins"] > a1["wins"]:
-        favorito = "leggero vantaggio tecnico secondo giocatore"
-    else:
-        favorito = "match equilibrato"
-
-    return favorito, over, handicap, ace, combined_avg
+    middle = len(words) // 2
+    return " ".join(words[:middle]), " ".join(words[middle:])
 
 
-def build_analysis(player1_name, player2_name):
-    p1 = find_player(player1_name)
-    p2 = find_player(player2_name)
+def build_analysis(name1, name2):
+    p1 = find_player(name1)
+    p2 = find_player(name2)
 
     if not p1 or not p2:
         return (
             "⚠️ Non riesco a trovare uno dei due giocatori.\n\n"
-            "Prova con il cognome esatto.\n"
-            "Esempio:\n/match Djokovic Sinner"
+            "Scrivi così:\n"
+            "/match Djokovic vs Sinner\n\n"
+            "Oppure usa cognomi più precisi."
         )
 
     m1 = get_past_matches(p1)
@@ -223,7 +207,34 @@ def build_analysis(player1_name, player2_name):
     a1 = analyze_player(p1, m1)
     a2 = analyze_player(p2, m2)
 
-    favorito, over, handicap, ace, combined_avg = build_prediction(a1, a2)
+    combined_avg = round((a1["avg_games"] + a2["avg_games"]) / 2, 1)
+    over_score = a1["over_22"] + a2["over_22"]
+    long_score = a1["long_matches"] + a2["long_matches"]
+    tie_score = a1["tiebreaks"] + a2["tiebreaks"]
+
+    if combined_avg >= 24 or over_score >= 10:
+        over_pick = "Over 22.5 games molto interessante"
+    elif combined_avg >= 21 or over_score >= 6:
+        over_pick = "Over games interessante ma non fortissimo"
+    else:
+        over_pick = "Under/No Over prioritario"
+
+    if long_score >= 7:
+        handicap_pick = "Handicap positivo sullo sfavorito interessante"
+    else:
+        handicap_pick = "Handicap da valutare con prudenza"
+
+    if tie_score >= 4:
+        ace_pick = "Possibile match con molti turni di servizio / ace interessanti"
+    else:
+        ace_pick = "Ace non prioritario dai dati recenti"
+
+    if a1["wins"] > a2["wins"]:
+        favorito = p1["name"]
+    elif a2["wins"] > a1["wins"]:
+        favorito = p2["name"]
+    else:
+        favorito = "Match equilibrato"
 
     return f"""
 🎾 ANALISI TECNICA REALE
@@ -232,7 +243,7 @@ def build_analysis(player1_name, player2_name):
 {p1['name']} ({p1['circuit'].upper()}) vs {p2['name']} ({p2['circuit'].upper()})
 
 🌍 Paesi:
-{p1.get('country', '')} vs {p2.get('country', '')}
+{p1['country']} vs {p2['country']}
 
 📊 Ultime 10 partite:
 
@@ -242,7 +253,7 @@ def build_analysis(player1_name, player2_name):
 🎯 Media games: {a1['avg_games']}
 📈 Over 22.5: {a1['over_22']}/10
 🔥 Match lunghi: {a1['long_matches']}/10
-🎾 Tiebreak/set tirati: {a1['tie_breaks']}
+🎾 Tiebreak/set tirati: {a1['tiebreaks']}
 
 {p2['name']}
 ✅ Vittorie: {a2['wins']}
@@ -250,23 +261,23 @@ def build_analysis(player1_name, player2_name):
 🎯 Media games: {a2['avg_games']}
 📈 Over 22.5: {a2['over_22']}/10
 🔥 Match lunghi: {a2['long_matches']}/10
-🎾 Tiebreak/set tirati: {a2['tie_breaks']}
+🎾 Tiebreak/set tirati: {a2['tiebreaks']}
 
 🧠 Lettura tecnica:
 - Media games combinata: {combined_avg}
-- Valutazione match: {favorito}
+- Vantaggio forma recente: {favorito}
 
 ✅ Migliore giocata tecnica:
-{over}
+{over_pick}
 
 📌 Handicap:
-{handicap}
+{handicap_pick}
 
 🎾 Ace:
-{ace}
+{ace_pick}
 
 ⚠️ Nota:
-Analisi basata su dati reali Tennis API.
+Analisi basata sui risultati recenti reali della Tennis API.
 Non considera quote bookmaker.
 """
 
@@ -289,9 +300,8 @@ def start(message):
     bot.reply_to(
         message,
         "🎾 Tennis AI Bot online!\n\n"
-        "Scrivi:\n"
-        "/match Djokovic Sinner\n\n"
-        "Funziona con ATP, WTA e ITF se i dati sono presenti nella API."
+        "Scrivi così:\n"
+        "/match Djokovic vs Sinner"
     )
 
 
@@ -300,17 +310,10 @@ def match(message):
     text = message.text.replace("/match", "").strip()
 
     if not text:
-        bot.reply_to(message, "Scrivi così:\n/match Djokovic Sinner")
+        bot.reply_to(message, "Scrivi così:\n/match Djokovic vs Sinner")
         return
 
-    parts = text.split()
-
-    if len(parts) < 2:
-        bot.reply_to(message, "Inserisci due giocatori.\nEsempio:\n/match Djokovic Sinner")
-        return
-
-    player1 = parts[0]
-    player2 = parts[1]
+    player1, player2 = split_players(text)
 
     bot.reply_to(message, "🔎 Analisi reale in corso su ATP/WTA/ITF...")
 
