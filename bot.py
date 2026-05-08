@@ -4,8 +4,8 @@ import requests
 import os
 import re
 import unicodedata
-from difflib import SequenceMatcher
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY")
@@ -17,315 +17,193 @@ RENDER_URL = "https://tennis-ai-bot-kbw4.onrender.com"
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-CIRCUITS = ["atp", "wta", "itf"]
-
-
-def clean_text(text):
-    if not text:
-        return ""
-    text = text.lower().strip()
-    text = unicodedata.normalize("NFD", text)
-    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def similarity(a, b):
-    return SequenceMatcher(None, clean_text(a), clean_text(b)).ratio()
+TOURS = ["atp", "wta", "itf"]
 
 
 def api_get(path):
     headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": RAPIDAPI_HOST,
+        "x-rapidapi-host": RAPIDAPI_HOST,
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "Content-Type": "application/json"
     }
 
     try:
-        r = requests.get(BASE_URL + path, headers=headers, timeout=30)
+        r = requests.get(BASE_URL + path, headers=headers, timeout=25)
         if r.status_code != 200:
+            print("API ERROR", r.status_code, path, r.text[:200])
             return None
         return r.json()
-    except Exception:
+    except Exception as e:
+        print("REQUEST ERROR", path, e)
         return None
+
+
+def clean(text):
+    text = str(text or "").lower().strip()
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def similarity(a, b):
+    return SequenceMatcher(None, clean(a), clean(b)).ratio()
+
+
+def name_match(user_name, api_name):
+    u = clean(user_name)
+    a = clean(api_name)
+
+    if not u or not a:
+        return False
+
+    if u == a or u in a:
+        return True
+
+    u_words = u.split()
+    a_words = a.split()
+
+    if u_words and u_words[-1] in a_words:
+        return True
+
+    return similarity(u, a) >= 0.68
 
 
 def split_players(text):
-    text = text.strip()
+    if " vs " not in text.lower():
+        return None, None
 
-    if " vs " in text.lower():
-        parts = re.split(r"\s+vs\s+", text, flags=re.IGNORECASE)
-        return parts[0].strip(), parts[1].strip()
+    parts = re.split(r"\s+vs\s+", text.strip(), flags=re.IGNORECASE)
 
-    return None, None
+    if len(parts) != 2:
+        return None, None
 
-
-def is_same_player(input_name, api_name):
-    q = clean_text(input_name)
-    n = clean_text(api_name)
-
-    if not q or not n:
-        return False
-
-    if q == n:
-        return True
-
-    if q in n:
-        return True
-
-    q_words = q.split()
-    n_words = n.split()
-
-    if len(q_words) == 1 and q_words[0] in n_words:
-        return True
-
-    if similarity(q, n) >= 0.72:
-        return True
-
-    return False
+    return parts[0].strip(), parts[1].strip()
 
 
-def find_match_from_fixtures(name1, name2):
+def get_fixtures(tour, date):
+    data = api_get(f"/tennis/v2/{tour}/fixtures/{date}")
+
+    if isinstance(data, dict):
+        return data.get("data", [])
+
+    return []
+
+
+def find_match(player_a, player_b):
     today = datetime.utcnow().date()
-
-    dates = []
-    for delta in range(-5, 8):
-        dates.append((today + timedelta(days=delta)).strftime("%Y-%m-%d"))
-
-    best_match = None
-    best_score = 0
-    best_circuit = None
-
-    for circuit in CIRCUITS:
-        for date in dates:
-            paths = [
-                f"/tennis/v2/{circuit}/fixtures/date/{date}",
-                f"/tennis/v2/{circuit}/fixtures/date-fixtures/{date}",
-                f"/tennis/v2/{circuit}/fixtures/{date}",
-                f"/tennis/v2/{circuit}/date-fixtures/{date}",
-            ]
-
-            for path in paths:
-                data = api_get(path)
-
-                if not isinstance(data, dict):
-                    continue
-
-                fixtures = data.get("data", [])
-
-                if not fixtures:
-                    continue
-
-                for m in fixtures:
-                    p1 = m.get("player1", {}) or {}
-                    p2 = m.get("player2", {}) or {}
-
-                    p1_name = p1.get("name", "")
-                    p2_name = p2.get("name", "")
-
-                    direct_score = 0
-
-                    if is_same_player(name1, p1_name) and is_same_player(name2, p2_name):
-                        direct_score = similarity(name1, p1_name) + similarity(name2, p2_name)
-
-                    if is_same_player(name1, p2_name) and is_same_player(name2, p1_name):
-                        direct_score = similarity(name1, p2_name) + similarity(name2, p1_name)
-
-                    if direct_score > best_score:
-                        best_score = direct_score
-                        best_match = m
-                        best_circuit = circuit
-
-    if best_match and best_score >= 1.15:
-        p1 = best_match.get("player1", {})
-        p2 = best_match.get("player2", {})
-
-        return {
-            "match": best_match,
-            "circuit": best_circuit,
-            "player1": {
-                "id": p1.get("id") or best_match.get("player1Id"),
-                "name": p1.get("name"),
-                "country": p1.get("countryAcr", ""),
-                "circuit": best_circuit,
-            },
-            "player2": {
-                "id": p2.get("id") or best_match.get("player2Id"),
-                "name": p2.get("name"),
-                "country": p2.get("countryAcr", ""),
-                "circuit": best_circuit,
-            },
-            "tournamentId": best_match.get("tournamentId"),
-        }
-
-    return None
-
-
-def search_player_name(name):
-    paths = [
-        f"/tennis/v2/search?search={requests.utils.quote(name)}",
-        f"/tennis/v2/misc/search?search={requests.utils.quote(name)}",
-        f"/tennis/v2/search/{requests.utils.quote(name)}",
-    ]
-
-    for path in paths:
-        data = api_get(path)
-
-        if not isinstance(data, dict):
-            continue
-
-        groups = data.get("data", [])
-
-        for group in groups:
-            category = group.get("category", "")
-
-            if not category.startswith("player_"):
-                continue
-
-            circuit = category.replace("player_", "")
-            results = group.get("result", [])
-
-            if results:
-                best = sorted(
-                    results,
-                    key=lambda x: similarity(name, x.get("name", "")),
-                    reverse=True,
-                )[0]
-
-                if similarity(name, best.get("name", "")) >= 0.6:
-                    return {
-                        "name": best.get("name"),
-                        "country": best.get("countryAcr", ""),
-                        "circuit": circuit,
-                    }
-
-    return None
-
-
-def find_player_in_recent_fixtures(name):
-    today = datetime.utcnow().date()
-    dates = []
-
-    for delta in range(-7, 15):
-        dates.append((today + timedelta(days=delta)).strftime("%Y-%m-%d"))
-
     best = None
     best_score = 0
+    best_reverse = False
+    best_tour = None
 
-    for circuit in CIRCUITS:
-        for date in dates:
-            paths = [
-                f"/tennis/v2/{circuit}/fixtures/date/{date}",
-                f"/tennis/v2/{circuit}/fixtures/{date}",
-                f"/tennis/v2/{circuit}/date-fixtures/{date}",
-            ]
+    for tour in TOURS:
+        for delta in range(-3, 15):
+            date = (today + timedelta(days=delta)).strftime("%Y-%m-%d")
+            fixtures = get_fixtures(tour, date)
 
-            for path in paths:
-                data = api_get(path)
+            for m in fixtures:
+                p1 = m.get("player1", {}) or {}
+                p2 = m.get("player2", {}) or {}
 
-                if not isinstance(data, dict):
+                name1 = p1.get("name", "")
+                name2 = p2.get("name", "")
+
+                if "/" in name1 or "/" in name2:
                     continue
 
-                for m in data.get("data", []):
-                    for key in ["player1", "player2"]:
-                        p = m.get(key, {}) or {}
-                        pname = p.get("name", "")
+                direct = 0
+                reverse = 0
 
-                        score = similarity(name, pname)
+                if name_match(player_a, name1) and name_match(player_b, name2):
+                    direct = similarity(player_a, name1) + similarity(player_b, name2)
 
-                        if is_same_player(name, pname) and score > best_score:
-                            best_score = score
-                            best = {
-                                "id": p.get("id") or m.get(f"{key}Id"),
-                                "name": pname,
-                                "country": p.get("countryAcr", ""),
-                                "circuit": circuit,
-                            }
+                if name_match(player_a, name2) and name_match(player_b, name1):
+                    reverse = similarity(player_a, name2) + similarity(player_b, name1)
 
-    return best
+                score = max(direct, reverse)
 
+                if score > best_score:
+                    best = m
+                    best_score = score
+                    best_reverse = reverse > direct
+                    best_tour = tour
 
-def find_player(name):
-    player = find_player_in_recent_fixtures(name)
-    if player:
-        return player
-
-    searched = search_player_name(name)
-    if searched:
-        player = find_player_in_recent_fixtures(searched["name"])
-        if player:
-            return player
-
-    return None
-
-
-def get_player_matches(player):
-    circuit = player["circuit"]
-    pid = player["id"]
-
-    paths = [
-        f"/tennis/v2/{circuit}/player/past-matches/{pid}",
-        f"/tennis/v2/{circuit}/player/fixtures/{pid}",
-        f"/tennis/v2/{circuit}/player/matches/{pid}",
-    ]
-
-    for path in paths:
-        data = api_get(path)
-        if isinstance(data, dict) and data.get("data"):
-            return data.get("data", [])
-
-    return []
-
-
-def get_h2h(player1, player2):
-    circuit = player1["circuit"]
-
-    paths = [
-        f"/tennis/v2/{circuit}/h2h/fixtures/{player1['id']}/{player2['id']}",
-        f"/tennis/v2/{circuit}/h2h/{player1['id']}/{player2['id']}",
-        f"/tennis/v2/{circuit}/fixtures/h2h/{player1['id']}/{player2['id']}",
-    ]
-
-    for path in paths:
-        data = api_get(path)
-        if isinstance(data, dict):
-            return data.get("data", [])
-
-    return []
-
-
-def get_surface(circuit, tournament_id):
-    if not tournament_id:
+    if not best or best_score < 1.05:
         return None
 
-    paths = [
-        f"/tennis/v2/{circuit}/tour/info/{tournament_id}",
-        f"/tennis/v2/{circuit}/tournament/info/{tournament_id}",
-        f"/tennis/v2/{circuit}/tournament/{tournament_id}",
-    ]
+    p1_raw = best.get("player1", {}) or {}
+    p2_raw = best.get("player2", {}) or {}
 
-    for path in paths:
-        data = api_get(path)
+    p1 = {
+        "id": p1_raw.get("id") or best.get("player1Id"),
+        "name": p1_raw.get("name", ""),
+        "country": p1_raw.get("countryAcr", ""),
+        "tour": best_tour
+    }
 
-        if not isinstance(data, dict):
-            continue
+    p2 = {
+        "id": p2_raw.get("id") or best.get("player2Id"),
+        "name": p2_raw.get("name", ""),
+        "country": p2_raw.get("countryAcr", ""),
+        "tour": best_tour
+    }
 
-        d = data.get("data", {})
-        court = d.get("court", {})
+    if best_reverse:
+        p1, p2 = p2, p1
 
-        if isinstance(court, dict) and court.get("name"):
-            return court.get("name")
+    return {
+        "match": best,
+        "tour": best_tour,
+        "player1": p1,
+        "player2": p2,
+        "tournamentId": best.get("tournamentId")
+    }
 
-    return None
+
+def get_past_matches(player):
+    data = api_get(f"/tennis/v2/{player['tour']}/player/past-matches/{player['id']}")
+
+    if isinstance(data, dict):
+        return data.get("data", [])
+
+    return []
 
 
-def parse_games(result):
+def get_h2h(p1, p2):
+    data = api_get(f"/tennis/v2/{p1['tour']}/fixtures/h2h/{p1['id']}/{p2['id']}")
+
+    if isinstance(data, dict):
+        return data.get("data", [])
+
+    return []
+
+
+def get_match_stats(player):
+    data = api_get(f"/tennis/v2/{player['tour']}/player/match-stats/{player['id']}")
+
+    if isinstance(data, dict):
+        return data.get("data", data)
+
+    return {}
+
+
+def get_surface_summary(player):
+    data = api_get(f"/tennis/v2/{player['tour']}/player/surface-summary/{player['id']}")
+
+    if isinstance(data, dict):
+        return data.get("data", data)
+
+    return {}
+
+
+def parse_score(result):
     if not result:
         return None
 
     r = result.lower()
 
-    if "ret" in r or "walkover" in r or "w/o" in r:
+    if "ret" in r or "w/o" in r or "walkover" in r:
         return None
 
     sets = re.findall(r"(\d+)-(\d+)", r)
@@ -345,17 +223,17 @@ def parse_games(result):
             tiebreaks += 1
 
     return {
-        "games": games,
         "sets": len(sets),
-        "tiebreaks": tiebreaks,
+        "games": games,
+        "tiebreaks": tiebreaks
     }
 
 
-def won(player, match):
+def player_won(player, match):
     return str(match.get("match_winner")) == str(player["id"])
 
 
-def analyze_player(player, matches):
+def analyze_recent(player, matches):
     wins = 0
     losses = 0
     valid = 0
@@ -366,12 +244,15 @@ def analyze_player(player, matches):
     tiebreaks = 0
 
     for m in matches[:10]:
-        if won(player, m):
+        if m.get("match_winner") is None:
+            continue
+
+        if player_won(player, m):
             wins += 1
         else:
             losses += 1
 
-        parsed = parse_games(m.get("result"))
+        parsed = parse_score(m.get("result"))
 
         if parsed:
             valid += 1
@@ -398,43 +279,85 @@ def analyze_player(player, matches):
         "over_22": over_22,
         "over_20": over_20,
         "long_matches": long_matches,
-        "tiebreaks": tiebreaks,
+        "tiebreaks": tiebreaks
     }
 
 
 def analyze_h2h(p1, p2, matches):
-    if not matches:
-        return {
-            "text": "🤝 H2H: nessun precedente diretto trovato.",
-            "p1": 0,
-            "p2": 0,
-            "avg": 0,
-        }
-
     p1_wins = 0
     p2_wins = 0
-    total_games = 0
     valid = 0
+    games_total = 0
 
     for m in matches[:10]:
         if str(m.get("match_winner")) == str(p1["id"]):
             p1_wins += 1
-        elif str(m.get("match_winner")) == str(p2["id"]):
+
+        if str(m.get("match_winner")) == str(p2["id"]):
             p2_wins += 1
 
-        parsed = parse_games(m.get("result"))
-        if parsed:
-            total_games += parsed["games"]
-            valid += 1
+        parsed = parse_score(m.get("result"))
 
-    avg = round(total_games / valid, 1) if valid else 0
+        if parsed:
+            valid += 1
+            games_total += parsed["games"]
+
+    avg = round(games_total / valid, 1) if valid else 0
 
     return {
-        "text": f"🤝 H2H: {p1['name']} {p1_wins} - {p2_wins} {p2['name']}",
         "p1": p1_wins,
         "p2": p2_wins,
-        "avg": avg,
+        "avg": avg
     }
+
+
+def extract_numbers(obj, keywords):
+    found = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                key = clean(k)
+                if any(word in key for word in keywords):
+                    if isinstance(v, (int, float)):
+                        found.append(float(v))
+                    elif isinstance(v, str):
+                        nums = re.findall(r"\d+\.?\d*", v)
+                        for n in nums:
+                            found.append(float(n))
+                walk(v)
+
+        elif isinstance(x, list):
+            for item in x:
+                walk(item)
+
+    walk(obj)
+    return found
+
+
+def stats_reading(stats):
+    aces = extract_numbers(stats, ["ace"])
+    dfs = extract_numbers(stats, ["double fault", "doublefault", "fault"])
+
+    ace_avg = round(sum(aces) / len(aces), 1) if aces else None
+    df_avg = round(sum(dfs) / len(dfs), 1) if dfs else None
+
+    return ace_avg, df_avg
+
+
+def surface_text(summary):
+    raw = str(summary)
+
+    surfaces = []
+
+    for s in ["Hard", "Clay", "Grass", "Indoor"]:
+        if s.lower() in raw.lower():
+            surfaces.append(s)
+
+    if not surfaces:
+        return "Dati superficie non dettagliati"
+
+    return ", ".join(surfaces)
 
 
 def choose_favorite(p1, p2, a1, a2, h2h):
@@ -442,100 +365,109 @@ def choose_favorite(p1, p2, a1, a2, h2h):
     s2 = a2["wins"] * 2 - a2["losses"] + h2h["p2"] * 2
 
     if s1 >= s2 + 3:
-        return p1["name"], s1, s2
+        fav = p1["name"]
+    elif s2 >= s1 + 3:
+        fav = p2["name"]
+    else:
+        fav = "Match equilibrato"
 
-    if s2 >= s1 + 3:
-        return p2["name"], s1, s2
-
-    return "Match equilibrato", s1, s2
+    return fav, s1, s2
 
 
-def market_analysis(a1, a2, h2h):
-    combined_avg = round((a1["avg_games"] + a2["avg_games"]) / 2, 1)
+def market_reading(a1, a2, h2h, ace1, ace2, df1, df2):
+    avg_games = round((a1["avg_games"] + a2["avg_games"]) / 2, 1)
 
     if h2h["avg"]:
-        combined_avg = round((combined_avg + h2h["avg"]) / 2, 1)
+        avg_games = round((avg_games + h2h["avg"]) / 2, 1)
 
     over_score = a1["over_22"] + a2["over_22"]
     long_score = a1["long_matches"] + a2["long_matches"]
     tb_score = a1["tiebreaks"] + a2["tiebreaks"]
 
-    if combined_avg >= 24 or over_score >= 9:
+    if avg_games >= 24 or over_score >= 9:
         over = "Over 22.5 games interessante"
-    elif combined_avg >= 21 or over_score >= 5:
-        over = "Over 20.5 / Over games valutabile"
+    elif avg_games >= 21 or over_score >= 5:
+        over = "Over 20.5 games valutabile"
     else:
         over = "Under games più prudente"
 
     if long_score >= 6:
         handicap = "Handicap positivo sullo sfavorito interessante"
     elif long_score >= 3:
-        handicap = "Handicap possibile con prudenza"
+        handicap = "Handicap possibile ma con prudenza"
     else:
         handicap = "Handicap non prioritario"
 
-    if tb_score >= 4:
-        ace = "Ace interessanti: segnali di set tirati/tiebreak"
+    if ace1 is not None or ace2 is not None:
+        ace = f"Ace: {ace1 if ace1 is not None else 'N/D'} vs {ace2 if ace2 is not None else 'N/D'}"
+    elif tb_score >= 4:
+        ace = "Ace interessanti: segnali indiretti da tiebreak/set tirati"
     else:
         ace = "Ace non prioritari dai dati disponibili"
 
-    doppi_falli = "Doppi falli: dati diretti non disponibili, lettura prudente"
+    if df1 is not None or df2 is not None:
+        doppi = f"Doppi falli: {df1 if df1 is not None else 'N/D'} vs {df2 if df2 is not None else 'N/D'}"
+    else:
+        doppi = "Doppi falli: dati non presenti nella risposta API"
 
-    return combined_avg, over, handicap, ace, doppi_falli
+    return avg_games, over, handicap, ace, doppi
 
 
 def build_analysis(raw1, raw2):
-    fixture_match = find_match_from_fixtures(raw1, raw2)
+    found = find_match(raw1, raw2)
 
-    if fixture_match:
-        p1 = fixture_match["player1"]
-        p2 = fixture_match["player2"]
-        tournament_id = fixture_match.get("tournamentId")
-        circuit = fixture_match["circuit"]
-    else:
-        p1 = find_player(raw1)
-        p2 = find_player(raw2)
+    if not found:
+        return (
+            "⚠️ Non riesco a trovare il match nei fixture ATP/WTA/ITF.\n\n"
+            "Scrivi così:\n"
+            "/match Nome Cognome vs Nome Cognome\n\n"
+            "Esempio:\n"
+            "/match Denis Shapovalov vs Mariano Navone"
+        )
 
-        if not p1 or not p2:
-            return (
-                "⚠️ Non riesco a trovare uno dei due giocatori.\n\n"
-                "Prova così:\n"
-                "/match Nome Cognome vs Nome Cognome\n\n"
-                "Esempio:\n"
-                "/match De Minaur vs Arnaldi"
-            )
+    p1 = found["player1"]
+    p2 = found["player2"]
 
-        tournament_id = None
-        circuit = p1["circuit"]
+    m1 = get_past_matches(p1)
+    m2 = get_past_matches(p2)
 
-    m1 = get_player_matches(p1)
-    m2 = get_player_matches(p2)
-
-    a1 = analyze_player(p1, m1)
-    a2 = analyze_player(p2, m2)
+    a1 = analyze_recent(p1, m1)
+    a2 = analyze_recent(p2, m2)
 
     h2h_matches = get_h2h(p1, p2)
     h2h = analyze_h2h(p1, p2, h2h_matches)
 
-    surface = get_surface(circuit, tournament_id)
-    surface_text = surface if surface else "non rilevata"
+    stats1 = get_match_stats(p1)
+    stats2 = get_match_stats(p2)
 
-    favorite, score1, score2 = choose_favorite(p1, p2, a1, a2, h2h)
-    avg, over, handicap, ace, doppi_falli = market_analysis(a1, a2, h2h)
+    ace1, df1 = stats_reading(stats1)
+    ace2, df2 = stats_reading(stats2)
+
+    surf1 = surface_text(get_surface_summary(p1))
+    surf2 = surface_text(get_surface_summary(p2))
+
+    fav, score1, score2 = choose_favorite(p1, p2, a1, a2, h2h)
+    avg_games, over, handicap, ace, doppi = market_reading(a1, a2, h2h, ace1, ace2, df1, df2)
+
+    confidence = abs(score1 - score2)
+
+    if confidence >= 8:
+        risk = "Basso/medio"
+    elif confidence >= 4:
+        risk = "Medio"
+    else:
+        risk = "Alto / match equilibrato"
 
     return f"""
 🎾 ANALISI TECNICA MATCH
 
 📌 Match:
-{p1['name']} ({p1['circuit'].upper()}) vs {p2['name']} ({p2['circuit'].upper()})
+{p1['name']} ({p1['tour'].upper()}) vs {p2['name']} ({p2['tour'].upper()})
 
 🌍 Paesi:
 {p1.get('country', '')} vs {p2.get('country', '')}
 
-🏟 Superficie:
-{surface_text}
-
-📊 Ultime 10 partite:
+📊 Forma ultime 10 partite:
 
 {p1['name']}
 ✅ Vittorie: {a1['wins']}
@@ -544,6 +476,7 @@ def build_analysis(raw1, raw2):
 📈 Over 22.5: {a1['over_22']}/10
 🔥 Match lunghi: {a1['long_matches']}/10
 🎾 Tiebreak/set tirati: {a1['tiebreaks']}
+🏟 Superfici dati: {surf1}
 
 {p2['name']}
 ✅ Vittorie: {a2['wins']}
@@ -552,19 +485,23 @@ def build_analysis(raw1, raw2):
 📈 Over 22.5: {a2['over_22']}/10
 🔥 Match lunghi: {a2['long_matches']}/10
 🎾 Tiebreak/set tirati: {a2['tiebreaks']}
+🏟 Superfici dati: {surf2}
 
-{h2h['text']}
+🤝 H2H:
+{p1['name']} {h2h['p1']} - {h2h['p2']} {p2['name']}
+Media games H2H: {h2h['avg']}
 
 🧠 Lettura tecnica:
-- Media games combinata: {avg}
-- Favorito tecnico: {favorite}
+- Favorito tecnico: {fav}
 - Score interno: {p1['name']} {score1} / {p2['name']} {score2}
+- Rischio: {risk}
 
 ✅ Vittoria:
-{favorite}
+{fav}
 
 📈 Over/Under games:
 {over}
+Media games combinata: {avg_games}
 
 📌 Handicap games:
 {handicap}
@@ -573,10 +510,10 @@ def build_analysis(raw1, raw2):
 {ace}
 
 ⚠️ Doppi falli:
-{doppi_falli}
+{doppi}
 
 ⚠️ Nota:
-Analisi basata su Tennis API. Le quote bookmaker non sono ancora collegate.
+Analisi tecnica basata su Tennis API. Non considera quote bookmaker.
 """
 
 
@@ -587,8 +524,7 @@ def home():
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode("UTF-8")
-    update = telebot.types.Update.de_json(json_str)
+    update = telebot.types.Update.de_json(request.get_data().decode("UTF-8"))
     bot.process_new_updates([update])
     return "OK", 200
 
@@ -599,7 +535,7 @@ def start(message):
         message,
         "🎾 Tennis AI Bot online!\n\n"
         "Scrivi così:\n"
-        "/match De Minaur vs Arnaldi"
+        "/match Denis Shapovalov vs Mariano Navone"
     )
 
 
@@ -607,20 +543,16 @@ def start(message):
 def match(message):
     text = message.text.replace("/match", "").strip()
 
-    if not text:
-        bot.reply_to(message, "Scrivi così:\n/match De Minaur vs Arnaldi")
-        return
-
     p1, p2 = split_players(text)
 
     if not p1 or not p2:
-        bot.reply_to(message, "Scrivi usando VS:\n/match De Minaur vs Arnaldi")
+        bot.reply_to(message, "Scrivi usando VS:\n/match Denis Shapovalov vs Mariano Navone")
         return
 
-    bot.reply_to(message, "🔎 Cerco match e giocatori reali su ATP/WTA/ITF...")
+    bot.reply_to(message, "🔎 Analisi in corso con endpoint verificati...")
 
-    risposta = build_analysis(p1, p2)
-    bot.reply_to(message, risposta)
+    answer = build_analysis(p1, p2)
+    bot.reply_to(message, answer)
 
 
 if __name__ == "__main__":
